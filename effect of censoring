@@ -1,0 +1,522 @@
+###################################################
+#
+# Code to assess the effect of censoring on spline inference
+#
+###################################################
+#
+#setwd("/Users/julianstander/Personal_Tutoring_2021_2022/Ignatus_Amoako")
+#
+###################################################
+#
+library(splines2)
+# Load Stan
+#
+library(rstan)
+#
+# To use multiple cores
+#
+options(mc.cores = parallel::detectCores())
+#
+# To avoid recompilation
+#
+rstan_options(auto_write = TRUE)
+#
+# Also uses ggplot2
+#
+library(ggplot2)
+#
+library(splines2)
+#
+library(tidyverse)
+#
+library(survival)
+#
+###################################################
+#
+# Sometimes it's necessary to remove existing .rds files
+#
+# Here's code to do this
+#
+files_to_remove <- list.files(path = getwd(), # Files in the working directory (the default)
+                              pattern = "(\\.rds)", # Identify files with extension .rds
+                              full.names = TRUE) # Include the (working directory) path in the name of each file
+#
+# Check the files to remove
+#
+files_to_remove
+#
+# If you want to remove these (make sure that you really want to do this!)
+#
+unlink(files_to_remove)
+#
+# Check to see whether any .stan or .rds files remain
+#
+list.files(path = getwd(), 
+           pattern = "(\\.rds)")
+#
+###################################################
+#
+# Stan code to fit the 
+#
+# ****** Spline based model ******
+#
+write("// Stan model for Spline based model
+  //
+  data {
+    //
+    int < lower = 1 > n; // sample size
+    int <lower = 1> n_col; // number of columns in basis matrix
+    //
+    vector[n] delta; // indicator of event
+    matrix[n, n_col] h_basis_t_data;  // h basis evaluated at t data points
+    matrix[n, n_col] H_basis_t_data;  // H basis evaluated at t data points
+    //
+    int <lower = 1> n_seq; // size of sequence of t points
+    matrix[n_seq, n_col] h_basis_t_seq;  // h basis evaluated at a sequence of t points
+    matrix[n_seq, n_col] H_basis_t_seq;  // H basis evaluated at a sequence of t points
+  }
+  //
+  parameters {
+    //
+    vector <lower = 0.00001> [n_col] beta; // Vector of positive parameters for spline
+    //
+  }
+//
+    model {
+      //
+      vector[n] h;
+      vector[n] log_h;
+      vector[n] H;
+      //
+      // Prior on beta
+      //
+      beta ~ normal(0, 100);
+      //
+      h = h_basis_t_data * beta;
+      H = H_basis_t_data * beta;
+      //
+      log_h = log(h);
+      //
+      // Log-likelihood (here defined in vectorized form)
+      //
+       target += delta .* log_h - H;
+     //
+    }
+//
+     generated quantities {
+        //
+        vector[n_seq] h_seq;
+        vector[n_seq] H_seq;
+        vector[n_seq] S_seq;
+        //
+        h_seq = h_basis_t_seq * beta;
+        H_seq = H_basis_t_seq * beta;
+        //
+        S_seq = exp(-H_seq);
+     }",
+# Specify file where code is written
+file = "Spline_Model.stan")
+#
+# ----------------------------------------
+#
+stanc("Spline_Model.stan")
+#
+#########################################
+#
+# Data simulation
+#
+# We will generate many data sets from the exponential model
+#
+# We will save the censoring rate and the fit
+#
+# We'll plot the fits later
+#
+# Number of points at which to evaluate the survivor function
+# (or whatever function may be of interest)
+#
+n_seq <- 100
+#
+# Number of repetitions of the experiment
+#
+N_rep <- 10
+#
+# Space for the censoring rates
+#
+censoring_rates_all <- rep(NA, N_rep)
+#
+# Space for the estimates of the survivor function S
+#
+S_all <- matrix(NA,
+                   nrow = n_seq,
+                   ncol = N_rep)
+#
+# ****** Exponential model ******
+#
+# Sample size
+#
+n_Exp <- 500
+#
+# Hazard
+#
+lambda_Exp <- 1.23
+#
+# Sequence of t-values at which to evaluate S(t), for example
+#
+t_seq <- seq(from = 0.001, #  Very small number for the lower limit
+             #
+             # Set the upper limit to be the 0.999 quantile of the
+             # distribution from which we are sampling
+             #
+             to = qexp(0.999, 
+                       rate = lambda_Exp),
+             length = n_seq) # Length of the t sequence
+#
+# Check
+#
+t_seq
+#
+###################################################################
+#
+# First experiment, with a low censoring rate
+#
+# mean_factor_Exp controls the censoring rate; please see below
+#
+mean_factor_Exp <- 0.2
+#
+###################################################################
+#
+# Repeat the simulation many times, that is, simulate many data sets
+#
+for(n_rep in 1:N_rep){
+#
+  print(paste0("Repetition of the experiement number ", n_rep))
+#
+#
+# Simulate some data
+#
+t_Exp <- rexp(n_Exp, rate = lambda_Exp)
+#
+# Censoring
+#
+# Generate random censoring limits c from an exponential
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+censoring_limit_Exp <- rexp(n_Exp,  
+                             rate = mean_factor_Exp * lambda_Exp) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored_Exp <- ifelse(censoring_limit_Exp < t_Exp, 1, 0)
+#
+is_censored_Exp
+#
+# Censoring rate
+#
+censoring_rate_Exp <- mean(is_censored_Exp)
+#
+# Save the censoring rate
+#
+censoring_rates_all[n_rep] <- censoring_rate_Exp
+#
+print(paste("Censoring rate for Exponential is ", censoring_rate_Exp))
+#
+# Events are the opposite of this
+#
+event_Exp <- ifelse(t_Exp < censoring_limit_Exp, 1, 0)
+#
+t_after_censoring_Exp <- ifelse(censoring_limit_Exp < t_Exp, 
+                            censoring_limit_Exp, t_Exp)
+#
+###################################################
+#
+# ****** Inference using splines ******
+#
+# Exponential data
+#
+t_after_censoring <- t_after_censoring_Exp
+#
+event <- event_Exp
+#
+# Spline bases
+#
+degree <- 3
+#
+epsilon <- 0.3
+#
+# Interior knots
+#
+n_knots <- 10
+#
+knots <- seq(from = min(t_after_censoring) + epsilon,
+             to = max(t_after_censoring) - epsilon,
+             length = n_knots)
+#
+knots
+#
+# Bases evaluated at t data
+#
+# For H
+#
+I_basis_t_data <- iSpline(t_after_censoring, 
+                          knots = knots, 
+                          degree = degree, 
+                          intercept = TRUE)
+
+dim(I_basis_t_data)
+#
+# For h
+#
+M_basis_t_data <- mSpline(t_after_censoring, 
+                          knots = knots, 
+                          degree = degree, 
+                          intercept = TRUE)
+
+#
+# Bases evaluated on a grid of points
+#
+I_basis_t_seq <- iSpline(t_seq, 
+                         knots = knots, 
+                         degree = degree, 
+                         intercept = TRUE)
+#
+M_basis_t_seq <- mSpline(t_seq, 
+                         knots = knots, 
+                         degree = degree, 
+                         intercept = TRUE)
+#
+# ----------------------------------------
+#
+data_Spline <- list(n = nrow(I_basis_t_data),
+                    n_col = ncol(I_basis_t_data),
+                    delta = event ,
+                    h_basis_t_data = M_basis_t_data,
+                    H_basis_t_data = I_basis_t_data,
+                    n_seq = n_seq,
+                    h_basis_t_seq = M_basis_t_seq,
+                    H_basis_t_seq = I_basis_t_seq)
+#
+# Run the inference (takes time to compile, the first time it is run)
+#
+fit_Spline <- stan(file = "Spline_Model.stan",
+                    data = data_Spline,
+                    warmup = 2500, # Burn-in
+                    iter = 5000, # Total number of iterations
+                    chains = 2, # Number of chains
+                    cores = 2, # Number of computer cores to use
+                    thin = 1) # Thinning interval
+#
+# Extract the posterior of the survivor function S
+# at t_seq
+#
+summary_Spline <- summary(fit_Spline)$summary
+#
+S_posterior <- summary_Spline[paste0("S_seq[",1:n_seq,"]"),
+                              "50%"]
+#
+# Save the results
+#
+S_all[, n_rep] <- S_posterior
+#
+} # End of main data simulation loop
+#
+###################################################################
+#
+# Plot all the fits
+#
+# There will be two experiments (low and high censoring rates)
+#
+# So we want two plots in a row
+#
+par(mfrow = c(1, 1))
+#
+matplot(t_seq, S_all,
+     type = "l",
+     lty = 1,
+     main = paste0("Data from exponential model with average censoring ", 
+                   signif(100 * mean(censoring_rates_all), 3), "%"),
+     xlab = "t",
+     ylab = "Spline estimation of S(t), using a logarithmic scale",
+     log = "y",
+     ylim = c(0.001, 1))
+#
+# Add the true survivor curve
+#
+curve(exp(-lambda_Exp * x), # It's S(t) = exp(-lambda t) for the exponential
+      add = TRUE,
+      lwd = 4)
+#
+############################################################
+############################################################
+#
+# Second experiment, with a higher censoring rate
+#
+# mean_factor_Exp controls the censoring rate; please see below
+#
+mean_factor_Exp <- 1.5
+#
+###################################################################
+#
+# Repeat the simulation many times, that is, simulate many data sets
+#
+for(n_rep in 1:N_rep){
+#
+  print(paste0("Repetition of the experiement number ", n_rep))
+#
+#
+# Simulate some data
+#
+t_Exp <- rexp(n_Exp, rate = lambda_Exp)
+#
+# Censoring
+#
+# Generate random censoring limits c from an exponential
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+censoring_limit_Exp <- rexp(n_Exp,  
+                             rate = mean_factor_Exp * lambda_Exp) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored_Exp <- ifelse(censoring_limit_Exp < t_Exp, 1, 0)
+#
+is_censored_Exp
+#
+# Censoring rate
+#
+censoring_rate_Exp <- mean(is_censored_Exp)
+#
+# Save the censoring rate
+#
+censoring_rates_all[n_rep] <- censoring_rate_Exp
+#
+print(paste("Censoring rate for Exponential is ", censoring_rate_Exp))
+#
+# Events are the opposite of this
+#
+event_Exp <- ifelse(t_Exp < censoring_limit_Exp, 1, 0)
+#
+t_after_censoring_Exp <- ifelse(censoring_limit_Exp < t_Exp, 
+                            censoring_limit_Exp, t_Exp)
+#
+###################################################
+#
+# ****** Inference using splines ******
+#
+# Exponential data
+#
+t_after_censoring <- t_after_censoring_Exp
+#
+event <- event_Exp
+#
+# Spline bases
+#
+degree <- 3
+#
+epsilon <- 0.3
+#
+# Interior knots
+#
+n_knots <- 10
+#
+knots <- seq(from = min(t_after_censoring) + epsilon,
+             to = max(t_after_censoring) - epsilon,
+             length = n_knots)
+#
+knots
+#
+# Bases evaluated at t data
+#
+# For H
+#
+I_basis_t_data <- iSpline(t_after_censoring, 
+                          knots = knots, 
+                          degree = degree, 
+                          intercept = TRUE)
+
+dim(I_basis_t_data)
+#
+# For h
+#
+M_basis_t_data <- mSpline(t_after_censoring, 
+                          knots = knots, 
+                          degree = degree, 
+                          intercept = TRUE)
+
+#
+# Bases evaluated on a grid of points
+#
+I_basis_t_seq <- iSpline(t_seq, 
+                         knots = knots, 
+                         degree = degree, 
+                         intercept = TRUE)
+#
+M_basis_t_seq <- mSpline(t_seq, 
+                         knots = knots, 
+                         degree = degree, 
+                         intercept = TRUE)
+#
+# ----------------------------------------
+#
+data_Spline <- list(n = nrow(I_basis_t_data),
+                    n_col = ncol(I_basis_t_data),
+                    delta = event ,
+                    h_basis_t_data = M_basis_t_data,
+                    H_basis_t_data = I_basis_t_data,
+                    n_seq = n_seq,
+                    h_basis_t_seq = M_basis_t_seq,
+                    H_basis_t_seq = I_basis_t_seq)
+#
+# Run the inference (takes time to compile, the first time it is run)
+#
+fit_Spline <- stan(file = "Spline_Model.stan",
+                    data = data_Spline,
+                    warmup = 2500, # Burn-in
+                    iter = 5000, # Total number of iterations
+                    chains = 2, # Number of chains
+                    cores = 2, # Number of computer cores to use
+                    thin = 1) # Thinning interval
+#
+# Extract the posterior of the survivor function S
+# at t_seq
+#
+summary_Spline <- summary(fit_Spline)$summary
+#
+S_posterior <- summary_Spline[paste0("S_seq[",1:n_seq,"]"),
+                              "50%"]
+#
+# Save the results
+#
+S_all[, n_rep] <- S_posterior
+#
+} # End of main data simulation loop
+#
+###################################################################
+#
+# Plot all the fits
+#
+matplot(t_seq, S_all,
+     type = "l",
+     lty = 1,
+     main = paste0("Data from exponential model with average censoring ", 
+                   signif(100 * mean(censoring_rates_all), 3), "%"),
+     xlab = "t",
+     ylab = "Spline estimation of S(t), using a logarithmic scale",
+     log = "y",
+     ylim = c(0.001, 1))
+#
+# Add the true survivor curve
+#
+curve(exp(-lambda_Exp * x), # It's S(t) = exp(-lambda t) for the exponential
+      add = TRUE,
+      lwd = 4)
+#
+############################################################
+#
+# Save the file
+#
+dev.copy2pdf(file = "Effect_of_censoring_on_spline_inference_data_from_exponential_model.pdf",
+             width = 14,
+             height = 8)
+#
+############################################################
+############################################################
