@@ -1,0 +1,84 @@
+#
+# Data
+#
+library(MASS)
+names(mcycle)
+#
+# plot
+#
+plot(accel ~ times, data = mcycle, xlab = "Time (milliseconds after impact)", ylab = "Acceleration (g)")
+#
+# ************************ LOESS ************************
+#
+# loess fit using lowess
+#
+attach(mcycle) # Access to the data
+lowess.fit <- lowess(times, accel, f = 2/3)
+# Look at it
+lowess.fit
+# Add this curve to the graph
+lines(lowess.fit)
+#
+# Alternative using loess (try different values of span, e.g. 1/3)
+#
+loess.fit <- loess(accel ~ times, span = 0.3,  degree = 1)
+#
+plot(accel ~ times, data = mcycle, xlab = "Time (milliseconds after impact)", ylab = "Acceleration (g)")
+#
+lines(loess.fit$x, loess.fit$fitted, col = "red")
+#
+# Extractor functions
+#
+fitted(loess.fit)
+
+predict(loess.fit)
+
+times.new <- c(10,20,30,40,50)
+predict(loess.fit, times.new, se = TRUE) # Can predict at other values and get standard errors
+
+residuals(loess.fit)
+
+#
+# Graphs
+#
+par(mfrow = c(2,1))
+#
+plot(accel ~ times, data = mcycle, xlab = "Time (milliseconds after impact)", ylab = "Acceleration (g)")
+lines(loess.fit$x, loess.fit$fitted, col = "red")
+#
+# Scatter smooth
+#
+scatter.smooth(times, accel, span = 2/3, degree = 1)
+#
+# ************************ SPLINES ************************
+#
+par(mfrow = c(1,1))
+#
+plot(accel ~ times, data = mcycle, xlab = "Time (milliseconds after impact)", ylab = "Acceleration (g)")
+#
+# Fit a smoothing spline and add it
+#
+smthspl.fit <- smooth.spline(times, accel, spar = 1)
+lines(smthspl.fit)
+#
+# Extractor functions
+#
+fitted(smthspl.fit)
+#
+predict(smthspl.fit)
+
+predict(smthspl.fit, times.new)
+
+residuals(smthspl.fit)
+
+# Choose smoothing parameters by employing generalised cross-validation
+
+smthspl.fit <- smooth.spline(times, accel)
+lines(smthspl.fit, col = "red")
+
+# Repeat using ordinary cross-validation
+smthsplord.fit <- smooth.spline(times, accel, cv = TRUE)
+lines(smthsplord.fit, col = "blue")
+
+legend("bottomright", legend = c("Generalized cross-validation", "Ordinary cross-validation"), lty = 1, col = c("red","blue"))
+
