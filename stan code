@@ -1,0 +1,536 @@
+###################################
+# THE EXPONENTIAL VARIABLE GENERATION
+n <- 500
+#
+# Hazard
+#
+lambda <- 1.5
+#
+lambda
+#
+# Simulate some data
+#
+t <- rexp(n, rate = lambda)
+#
+# Censoring
+#
+# Generate random censoring limits c from an exponential
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+mean_factor <- 0.2
+#
+censoring_limit <- rexp(n,  
+                        rate = mean_factor * lambda) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored <- ifelse(censoring_limit < t, 1, 0)
+#
+is_censored
+#
+# Censoring rate
+#
+censoring_rate <- mean(is_censored)
+#
+print(paste("Censoring rate is ", censoring_rate))
+#
+# Events are the opposite of this
+#
+event <- ifelse(t < censoring_limit, 1, 0)
+#
+event
+#
+t_after_censoring <- ifelse(censoring_limit < t, 
+                            censoring_limit, t)
+#
+t_after_censoring
+
+degree <- 3
+#
+# Hence we need a basis for a monotonic positive spline
+#
+# Knots along t values
+#
+n_knots <- 10 # Technically, this is the number of "interior" knots
+#
+epsilon <- 0.3 # So that knots are not placed at the ends of the data range
+#
+knots <- seq(from = min(t_after_censoring) + epsilon,
+             to = max(t_after_censoring) - epsilon,
+             length = n_knots)
+#
+knots
+#
+# Basis functions are evaluated along a sequence of t values
+#
+
+###################################################
+#
+# Load Stan
+#
+library(rstan)
+#
+# To use multiple cores (if possible - not on my machine)
+#
+options(mc.cores = parallel::detectCores())
+#
+# To avoid recompilation
+#
+rstan_options(auto_write = TRUE)
+#
+# Also uses ggplot2
+#
+library(ggplot2)
+#
+###################################################
+#
+# Sometimes it's necessary to remove existing .stan and .rds files
+#
+# Here's code to do this
+#
+files_to_remove <- list.files(path = getwd(), # Files in the working directory (the default)
+                              pattern = "(\\.stan|\\.rds)", # Identify files with extension .stan and .rds
+                              full.names = TRUE) # Include the (working directory) path in the name of each file
+#
+# Check the files to remove
+#
+files_to_remove
+#
+# If you want to remove these (make sure that you really want to do this!)
+#
+unlink(files_to_remove)
+#
+# Check to see whether any .stan or .rds files remain
+#
+list.files(path = getwd(), pattern = "(\\.stan|\\.rds)")
+#
+###################################################
+#
+# ****** Inference ******
+#
+# Stan code to fit the 
+#
+# ****** Spline stan using exponential model******
+#
+write("// Stan model for splines
+  //
+  data {
+    //
+    int < lower = 1 > n; // sample size
+    int < lower = 1 > n_col;// number of columns
+    //
+    vector[n] delta; // indicator of event
+    //
+    matrix[n,n_col] I_basis_function_values; // cumulative hazard function
+    matrix[n,n_col] M_basis_function_values; // hazard function
+    //
+    int <lower = 1> n_seq;
+    matrix[n_seq, n_col] I_basis_function_t_seq;
+    matrix[n_seq, n_col] M_basis_function_t_seq;
+
+    //
+  }
+  //
+  parameters {
+    //
+    vector <lower = 0.0001>  [n_col] beta;
+    //
+  }
+//
+    model {
+      //
+      vector[n] h;
+      vector[n] log_h;
+      vector[n] H; 
+      //
+      // Calculate h, log_h and H
+      //
+      h = M_basis_function_values * beta;
+      log_h = log(h);
+      //
+      H = I_basis_function_values * beta;
+      //
+      // Prior
+      //
+      beta ~ normal(0,100); // prior on beta
+      //
+      // Define log_h and H (could be vectoried?)
+      //
+      // Log-likelihood (here defined in vectorized form)
+      //
+      target += delta .* log_h - H;
+      //
+    }
+    //
+    generated quantities {
+      vector[n_seq] h_seq;
+      vector[n_seq] H_seq;
+      vector[n_seq] S_seq;
+      //
+      h_seq = M_basis_function_t_seq * beta;
+      H_seq = I_basis_function_t_seq * beta;
+      //
+      S_seq = exp(-H_seq);
+    }",
+# Specify file where code is written
+file = "Spline_model.stan")
+#
+###############################################################
+#
+# Check correctness of code
+#
+stanc("Spline_Model.stan")
+#
+###############################################################
+#
+n_seq <- 50
+#
+t_seq <- seq(from = min(t_after_censoring),
+             to = max(t_after_censoring),
+             length = n_seq)
+#
+library(splines2)
+I_basis_function_t_seq <- iSpline(t_seq, 
+                                  knots = knots, 
+                                  degree = degree, 
+                                  intercept = TRUE)
+
+M_basis_function_t_seq <- mSpline(t_seq, 
+                                  knots = knots, 
+                                  degree = degree, 
+                                  intercept = TRUE) 
+
+I_basis_function_values <- iSpline(t_after_censoring, 
+                                   knots = knots, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+M_basis_function_values <- mSpline(t_after_censoring, 
+                                   knots = knots, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+
+data_spline <- list(n = length(t_after_censoring),
+                 delta = event,
+                 I_basis_function_values = I_basis_function_values,
+                 M_basis_function_values = M_basis_function_values,
+                 n_col = ncol(I_basis_function_values),
+                 #
+                 n_seq = nrow(I_basis_function_t_seq),
+                 I_basis_function_t_seq = I_basis_function_t_seq,
+                 M_basis_function_t_seq = M_basis_function_t_seq)
+#
+# Run the inference (takes time to compile, the first time it is run)
+#
+fit_spline <- stan(file = "Spline_model.stan",
+                data = data_spline,
+                warmup = 2500, # Burn-in
+                iter = 5000, # Total number of iterations
+                chains = 2, # Number of chains
+                cores = 2, # Number of computer cores to use
+                thin = 1) # Thinning interval
+#
+# Look at the output
+#
+fit_spline
+#
+# Compare with true value
+#
+lambda
+#
+stan_plot(fit_spline,
+          pars = "h_seq")
+#
+stan_plot(fit_spline,
+          pars = "H_seq")
+#
+stan_plot(fit_spline,
+          pars = "S_seq")
+#
+#
+# Extract the information about h_seq, H_seq and S_seq
+#
+h_seq_posterior <- summary(fit_spline)$summary[paste0("h_seq[",1:n_seq,"]"), 
+                                               c("mean", "2.5%", "97.5%")]
+h_seq_posterior
+#
+
+H_seq_posterior <- summary(fit_spline)$summary[paste0("H_seq[",1:n_seq,"]"), 
+                                               c("mean", "2.5%", "97.5%")]
+H_seq_posterior
+
+S_seq_posterior <- summary(fit_spline)$summary[paste0("S_seq[",1:n_seq,"]"), 
+                                               c("mean", "2.5%", "97.5%")]
+S_seq_posterior
+
+
+par(mfrow = c(1,1))
+
+matplot(t_seq, h_seq_posterior,
+     type = "l",xlab = "t",ylab = "h(t)",lwd = 3)
+abline(h=lambda,col="blue",lwd=2)
+#
+matplot(t_seq, H_seq_posterior,
+        type = "l",xlab = "t",ylab = "H(t)",lwd = 3)
+lines(t_seq,(lambda*t_seq),col="blue",lwd=2)
+#
+matplot(t_seq, S_seq_posterior,
+        type = "l",
+        lty = 1,
+        col = "red",xlab = "t",ylab = "S(t)")
+
+lines(t_seq,exp(-lambda*t_seq),
+      lwd = 2)
+
+
+
+stan_trace(fit_spline)
+#
+#
+stan_dens(fit_spline) +
+  geom_vline(xintercept = lambda)
+#
+###################################################
+#
+# Stan code to fit the 
+#
+# ******Spline Stan using Weibull model ******
+#
+# THE WEIBULL DATA GENERATION
+lambda_weibull <- 0.5
+#
+gamma <- 0.8
+#
+# Parameterization used by rweibull
+#
+shape <- gamma # a
+#
+scale <- lambda_weibull^(-1 / gamma) # b 
+#
+# Simulate data from a Weibull distribution
+#
+t_weibull <- rweibull(n,
+              shape = shape,
+              scale = scale)
+#
+# Censoring
+#
+# Generate random censoring limits c from an exponential
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+mean_factor_weibull <- 10
+#
+censoring_limit_weibull <-  rweibull(n,
+                             shape = shape,
+                             scale = scale * mean_factor_weibull) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored_weibull <- ifelse(censoring_limit_weibull < t_weibull, 1, 0)
+#
+# Censoring rate
+#
+censoring_rate_weibull <- mean(is_censored_weibull)
+
+#
+# Events are the opposite of this
+#
+
+event_weibull <- ifelse(t_weibull < censoring_limit_weibull, 1, 0)
+#
+t_after_censoring_weibull <- ifelse(censoring_limit_weibull < t_weibull, 
+                                    censoring_limit_weibull, t_weibull)
+#
+print(paste("Censoring rate is ", censoring_rate_weibull))
+
+degree <- 3
+#
+# Hence we need a basis for a monotonic positive spline
+#
+# Knots along t values
+#
+n_knots_weibull <- 10 # Technically, this is the number of "interior" knots
+#
+epsilon <- 0.3 # So that knots are not placed at the ends of the data range
+#
+knots_weibull <- seq(from = min(t_after_censoring_weibull) + epsilon,
+             to = max(t_after_censoring_weibull) - epsilon,
+             length = n_knots_weibull)
+#
+knots_weibull
+
+
+
+write("// Stan model for splines
+  //
+  data {
+    //
+    int < lower = 1 > n; // sample size
+    int < lower = 1 > n_col;// number of columns
+    //
+    vector[n] delta; // indicator of event
+    //
+    matrix[n,n_col] I_basis_function_values; // cumulative hazard function
+    matrix[n,n_col] M_basis_function_values; // hazard function
+    //
+    int <lower = 1> n_seq;
+    matrix[n_seq, n_col] I_basis_function_t_seq;
+    matrix[n_seq, n_col] M_basis_function_t_seq;
+
+    //
+  }
+  //
+  parameters {
+    //
+    vector <lower = 0.0001>  [n_col] beta;
+    //
+  }
+//
+    model {
+      //
+      vector[n] h;
+      vector[n] log_h;
+      vector[n] H; 
+      //
+      // Calculate h, log_h and H
+      //
+      h = M_basis_function_values * beta;
+      log_h = log(h);
+      //
+      H = I_basis_function_values * beta;
+      //
+      // Prior
+      //
+      beta ~ normal(0,100); // prior on beta
+      //
+      // Define log_h and H (could be vectoried?)
+      //
+      // Log-likelihood (here defined in vectorized form)
+      //
+      target += delta .* log_h - H;
+      //
+    }
+    //
+    generated quantities {
+      vector[n_seq] h_seq;
+      vector[n_seq] H_seq;
+      vector[n_seq] S_seq;
+      //
+      h_seq = M_basis_function_t_seq * beta;
+      H_seq = I_basis_function_t_seq * beta;
+      //
+      S_seq = exp(-H_seq);
+    }",
+
+# Specify file where code is written
+file = "Weibull_Model.stan")
+#
+###############################################################
+#
+# Check correctness of code
+#
+stanc("Weibull_Model.stan")
+#
+###############################################################
+#
+t_seq_weibull <- seq(from = min(t_after_censoring_weibull),
+             to = max(t_after_censoring_weibull),
+             length = n_seq)
+#
+library(splines2)
+I_basis_function_t_seq_weibull <- iSpline(t_seq_weibull, 
+                                  knots = knots_weibull, 
+                                  degree = degree, 
+                                  intercept = TRUE)
+
+M_basis_function_t_seq_weibull <- mSpline(t_seq_weibull, 
+                                  knots = knots_weibull, 
+                                  degree = degree, 
+                                  intercept = TRUE) 
+
+I_basis_function_values_weibull <- iSpline(t_after_censoring_weibull, 
+                                   knots = knots_weibull, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+M_basis_function_values_weibull <- mSpline(t_after_censoring_weibull, 
+                                   knots = knots_weibull, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+
+data_spline_weibull <- list(n = length(t_after_censoring_weibull),
+                    delta = event_weibull,
+                    I_basis_function_values = I_basis_function_values_weibull,
+                    M_basis_function_values = M_basis_function_values_weibull,
+                    n_col = ncol(I_basis_function_values_weibull),
+                    #
+                    n_seq = nrow(I_basis_function_t_seq_weibull),
+                    I_basis_function_t_seq = I_basis_function_t_seq_weibull,
+                    M_basis_function_t_seq = M_basis_function_t_seq_weibull)
+
+#
+# Run the inference (takes time to compile, the first time it is run)
+#
+fit_Weibull <- stan(file = "Weibull_Model.stan",
+                    data = data_spline_weibull,
+                    warmup = 2500, # Burn-in
+                    iter = 5000, # Total number of iterations
+                    chains = 2, # Number of chains
+                    cores = 2, # Number of computer cores to use
+                    thin = 1) # Thinning interval
+#
+# Look at the output
+#
+fit_Weibull
+#
+# Compare with true value
+#
+lambda_weibull
+#
+gamma
+#
+stan_plot(fit_Weibull,pars = "h_seq")
+stan_plot(fit_Weibull,pars = "H_seq")
+stan_plot(fit_Weibull,pars = "S_seq")
+
+#
+# Extract the information about h_seq, H_seq and S_seq
+#
+h_seq_posterior_weibull <- summary(fit_Weibull)$summary[paste0("h_seq[",1:n_seq,"]"), 
+                                               c("mean", "2.5%", "97.5%")]
+h_seq_posterior_weibull
+#
+
+H_seq_posterior_weibull <- summary(fit_Weibull)$summary[paste0("H_seq[",1:n_seq,"]"), 
+                                               c("mean", "2.5%", "97.5%")]
+H_seq_posterior_weibull
+
+S_seq_posterior_weibull <- summary(fit_Weibull)$summary[paste0("S_seq[",1:n_seq,"]"), 
+                                               c("mean", "2.5%", "97.5%")]
+S_seq_posterior_weibull
+
+par(mfrow = c(1,1))
+
+matplot(t_seq_weibull, h_seq_posterior_weibull,
+        type = "l",xlab = "t",ylab = "h(t)",lwd = 3)
+lines(t_seq_weibull,lambda_weibull*shape*(t_seq_weibull^shape-1),
+      lwd=2,col="blue")
+#
+matplot(t_seq_weibull, H_seq_posterior_weibull,
+        type = "l",xlab = "t",ylab = "H(t)",lwd = 3)
+lines(t_seq_weibull,lambda_weibull*t_seq_weibull^shape,
+      lwd=2,col="blue")
+#
+matplot(t_seq_weibull, S_seq_posterior_weibull,
+        type = "l",
+        lty = 1,
+        col = "red",lwd=3,xlab = "t",ylab = "S(t)")
+
+lines(t_seq_weibull,exp(-lambda_weibull*t_seq_weibull^shape),
+      lwd = 2,col="blue")
+
+
+
+stan_trace(fit_Weibull)
+#
+#
+stan_dens(fit_Weibull) +
+  geom_vline(xintercept = lambda_weibull)
