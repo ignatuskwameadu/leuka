@@ -1,0 +1,261 @@
+#
+library(splines) # For base R bs function
+#
+library(splines2) # For all other spline functions
+#
+###############################################
+#
+# Simulate data from an exponential distribution
+#
+# Assume that the hazard is constant over time
+#
+n <- 500
+#
+# Hazard
+#
+lambda <- 1.5
+#
+lambda
+#
+# Simulate some data
+#
+t <- rexp(n, rate = lambda)
+#
+# Censoring
+#
+# Generate random censoring limits c from an exponential
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+mean_factor <- 0.2
+#
+censoring_limit <- rexp(n,  
+                        rate = mean_factor * lambda) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored <- ifelse(censoring_limit < t, 1, 0)
+#
+is_censored
+#
+# Censoring rate
+#
+censoring_rate <- mean(is_censored)
+#
+print(paste("Censoring rate is ", censoring_rate))
+#
+# Events are the opposite of this
+#
+event <- ifelse(t < censoring_limit, 1, 0)
+#
+event
+#
+t_after_censoring <- ifelse(censoring_limit < t, 
+                            censoring_limit, t)
+#
+t_after_censoring
+#
+# Check that this is min(censoring limit, t)
+#
+t_after_censoring - pmin(censoring_limit, t)
+#
+t_after_censoring
+#
+# Some plots
+#
+hist(t_after_censoring[event == 1])
+#
+hist(t_after_censoring[event == 0])
+#
+###########################################################
+#
+#
+# Let us adopt a flexible model for the Cumulative Hazard,
+# which is monotonic and positive
+#
+# We will work with cubic splines throughout
+#
+degree <- 3
+#
+# Hence we need a basis for a monotonic positive spline
+#
+# Knots along t values
+#
+n_knots <- 10 # Technically, this is the number of "interior" knots
+#
+epsilon <- 0.3 # So that knots are not placed at the ends of the data range
+#
+knots <- seq(from = min(t_after_censoring) + epsilon,
+             to = max(t_after_censoring) - epsilon,
+             length = n_knots)
+#
+knots
+#
+# Basis functions are evaluated along a sequence of t values
+#
+N <- 100
+#
+t_seq <- seq(from = min(t_after_censoring),
+             to = max(t_after_censoring),
+             length = N)
+#
+I_basis_cubic <- iSpline(t_seq, 
+                         knots = knots, 
+                         degree = degree, 
+                         intercept = TRUE)
+#
+dim(I_basis_cubic)
+#
+length(knots) + degree + 1
+#
+# Plot these basis functions
+#
+p <- par(mfrow = c(2, 2))
+#
+matplot(t_seq, I_basis_cubic, 
+        type = "l", 
+       # lty = 1, 
+        xlab = "t",
+        ylab = "I(t)",
+        main = "I-splines using cubics")
+#
+# Show the interior knows
+#
+abline(v = knots, lty = 2, col = "gray")
+#
+# Take a positive linear combination of these basis functions
+# to make a monotonic function
+#
+beta <- runif(ncol(I_basis_cubic), 
+              2, 
+              4)
+beta
+#
+plot(t_seq , 
+     I_basis_cubic %*% beta,
+     xlab = "t",
+     ylab = "H(t)",
+     main = "Example of H(t)",
+     type = "l")
+#
+# Evaluate the function at the data points
+#
+t_after_censoring
+#
+I_basis_function_values <- iSpline(t_after_censoring, 
+                                   knots = knots, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+#
+dim(I_basis_function_values)
+#
+points(t_after_censoring , 
+       I_basis_function_values %*% beta,
+       pch = 4)
+#
+rug(t_after_censoring)
+#
+# ------------------------------------------------------
+#
+# Derivatives which should come from mSpline
+#
+M_basis_cubic <- mSpline(t_seq, 
+                         knots = knots, 
+                         degree = degree, 
+                         intercept = TRUE)
+#
+dim(M_basis_cubic)
+#
+length(knots) + degree + 1
+#
+# Plot them
+#
+matplot(t_seq, M_basis_cubic, 
+        type = "l", 
+       # lty = 1, 
+        xlab = "t",
+        ylab = "M(t)",
+        main = "M-splines using cubics")
+#
+# Show the interior knows
+#
+abline(v = knots, lty = 2, col = "gray")
+#
+# Now the derivative of the function
+#
+plot(t_seq , 
+     M_basis_cubic %*% beta,
+     xlab = "t",
+     ylab = "h(t)",
+     main = "Corresponding h(t) = derivative of H(t)",
+     type = "l")
+#
+# Evaluate the function at the data points
+#
+t_after_censoring
+#
+M_basis_function_values <- mSpline(t_after_censoring, 
+                                   knots = knots, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+#
+dim(M_basis_function_values)
+#
+points(t_after_censoring , 
+     M_basis_function_values %*% beta,
+     pch = 4)
+#
+rug(t_after_censoring)
+#
+######################################
+
+spline_nll<-function(beta, I,M,event){
+  sum(I%*%beta - event*log(M%*%beta))
+}
+spline_nll(beta,I_basis_function_values,M_basis_function_values,event)
+
+beta_init <- rep(0.05, length = ncol(I_basis_function_values))
+beta_init
+
+o <- optim(par = beta_init, # optim requires a vector of starting values for the algorithm
+           spline_nll,
+           I = I_basis_function_values,
+           M =  M_basis_function_values,
+           event = event,
+           lower = 0.01,
+           method = "L-BFGS-B",
+           control = list(maxit = 10000))
+#
+o
+#
+beta_hat <- o$par
+#
+
+par(mfrow = c(2,1))
+
+plot(t_seq, M_basis_cubic %*% beta_hat,
+     type = "l",
+     xlab = "t",
+     ylab = "h(t)",
+     lwd = 2)
+#
+abline(h = lambda)
+#
+rug(t_after_censoring[event == 1],
+    col = "green")
+#
+rug(t_after_censoring[event == 0],
+    col = "red")
+
+#
+plot(t_seq, I_basis_cubic %*% beta_hat,
+     type = "l",
+     xlab = "t",
+     ylab = "H(t)",
+     lwd = 2)
+
+rug(t_after_censoring[event == 1],
+col = "green")
+#
+rug(t_after_censoring[event == 0],
+    col = "red")
+lines(t_seq, lambda*t_seq)
