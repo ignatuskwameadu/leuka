@@ -1,0 +1,404 @@
+library(dplyr)
+library(splines2)
+library(rstan)
+#setwd("C:/Users/ignat/Dropbox/PC/Documents/dissertation materials/Re__Appointment/Data sets for Modelling Survival Data, 3rd edn")
+
+
+women_cancer<-read.table("Prognosis for women with breast cancer.dat",
+                         header = TRUE)
+women_cancer
+
+negative_staining <- women_cancer %>%
+  filter(stain == 1)
+#
+negative_staining
+
+
+positive_staining <- women_cancer %>%
+  filter(stain == 2)
+#
+positive_staining
+
+#
+###################################
+#
+time_negative <- negative_staining$time
+status_negative <- negative_staining$status
+#
+time_positive <- positive_staining$time
+status_positive <- positive_staining$status
+
+
+
+colnames(negative_staining)<-c("stain","time","status")
+colnames(positive_staining)<-c("stain","time","status")
+time_negative<-as.numeric(negative_staining$time)
+time_negative
+
+status_negative<-as.numeric(negative_staining$status)
+status_negative
+
+
+degree <- 3
+
+n_knots_real_data <- 4 # Technically, this is the number of "interior" knots
+#
+epsilon <- 0.3 # So that knots are not placed at the ends of the data range
+#
+knots_real_data <- seq(from = min(time_negative) + epsilon,
+             to = max(time_negative) - epsilon,
+             length = n_knots_real_data)
+knots_real_data
+
+N <- 70
+N
+
+time_seq_real_data <- seq(from = min(time_negative),
+                to = max(time_negative),
+                length = N)
+time_seq_real_data
+
+I_basis_cubic_real_data <- iSpline(time_seq_real_data, 
+                         knots = knots_real_data, 
+                         degree = degree, 
+                         intercept = TRUE)
+M_basis_cubic_real_data <- mSpline(time_seq_real_data, 
+                         knots = knots_real_data, 
+                         degree = degree, 
+                         intercept = TRUE)
+
+I_basis_function_values_real_data <- iSpline(time_negative, 
+                                   knots = knots_real_data, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+M_basis_function_values_real_data <- mSpline(time_negative, 
+                                   knots = knots_real_data, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+write("// Stan model for splines
+  //
+  data {
+    //
+    int < lower = 1 > n; // sample size
+    int < lower = 1 > n_col;// number of columns
+    //
+    vector[n] delta; // indicator of event
+    //
+    matrix[n,n_col] I_basis_function_values; // cumulative hazard function
+    matrix[n,n_col] M_basis_function_values; // hazard function
+    //
+    int <lower = 1> n_seq;
+    matrix[n_seq, n_col] I_basis_function_t_seq;
+    matrix[n_seq, n_col] M_basis_function_t_seq;
+
+    //
+  }
+  //
+  parameters {
+    //
+    vector <lower = 0.0001>  [n_col] beta;
+    //
+  }
+//
+    model {
+      //
+      vector[n] h;
+      vector[n] log_h;
+      vector[n] H; 
+      //
+      // Calculate h, log_h and H
+      //
+      h = M_basis_function_values * beta;
+      log_h = log(h);
+      //
+      H = I_basis_function_values * beta;
+      //
+      // Prior
+      //
+      beta ~ normal(0,100); // prior on beta
+      //
+      // Define log_h and H (could be vectoried?)
+      //
+      // Log-likelihood (here defined in vectorized form)
+      //
+      target += delta .* log_h - H;
+      //
+    }
+    //
+    generated quantities {
+      vector[n_seq] h_seq;
+      vector[n_seq] H_seq;
+      vector[n_seq] S_seq;
+      //
+      h_seq = M_basis_function_t_seq * beta;
+      H_seq = I_basis_function_t_seq * beta;
+      //
+      S_seq = exp(-H_seq);
+    }",
+      
+# Specify file where code is written
+file = "negative_staining.stan")
+
+##############################################################
+#
+# Check correctness of code
+#
+stanc("negative_staining.stan")
+
+data_spline_real_data <- list(n = length(time_negative),
+                            delta = status_negative,
+                            I_basis_function_values = I_basis_function_values_real_data,
+                            M_basis_function_values = M_basis_function_values_real_data,
+                            n_col = ncol(I_basis_function_values_real_data),
+                            #
+                            n_seq = nrow(I_basis_cubic_real_data),
+                            I_basis_function_t_seq = I_basis_cubic_real_data,
+                            M_basis_function_t_seq = M_basis_cubic_real_data)
+
+fit_real_data <- stan(file = "negative_staining.stan",
+                    data = data_spline_real_data,
+                    warmup = 2500, # Burn-in
+                    iter = 5000, # Total number of iterations
+                    chains = 2, # Number of chains
+                    cores = 2, # Number of computer cores to use
+                    thin = 1) # Thinning interval
+fit_real_data
+
+stan_plot(fit_real_data,pars = "h_seq")
+stan_plot(fit_real_data,pars = "H_seq")
+stan_plot(fit_real_data,pars = "S_seq")
+
+# Extract the information about h_seq, H_seq and S_seq
+#
+h_seq_posterior_real_data <- summary(fit_real_data)$summary[paste0("h_seq[",1:N,"]"), 
+                                                        c("mean", "2.5%", "97.5%")]
+h_seq_posterior_real_data
+#
+
+H_seq_posterior_real_data <- summary(fit_real_data)$summary[paste0("H_seq[",1:N,"]"), 
+                                                        c("mean", "2.5%", "97.5%")]
+H_seq_posterior_real_data
+
+S_seq_posterior_real_data <- summary(fit_real_data)$summary[paste0("S_seq[",1:N,"]"), 
+                                                        c("mean", "2.5%", "97.5%")]
+S_seq_posterior_real_data
+
+
+par(mfrow = c(1,1))
+
+matplot(time_seq_real_data[10:60], h_seq_posterior_real_data[10:60,],
+        type = "l",lwd = 3,xlab = "t",ylab = "h(t)")
+#
+matplot(time_seq_real_data, H_seq_posterior_real_data,
+        type = "l",lwd = 3,xlab = "t",ylab = "H(t)")
+#
+matplot(time_seq_real_data, S_seq_posterior_real_data,
+        type = "l",
+        lty = 1,
+        col = "red")
+
+
+
+stan_trace(fit_real_data)
+
+####################################################
+###########POSITIVE STAINING##################
+degree <- 3
+
+n_knots_positive <- 4 # Technically, this is the number of "interior" knots
+#
+epsilon <- 0.3 # So that knots are not placed at the ends of the data range
+#
+knots_positive <- seq(from = min(time_positive) + epsilon,
+                       to = max(time_positive) - epsilon,
+                       length = n_knots_positive)
+knots_positive
+
+N <- 70
+N
+
+time_seq_positive <- seq(from = min(time_positive),
+                          to = max(time_positive),
+                          length = N)
+time_seq_positive
+
+I_basis_cubic_positive <- iSpline(time_seq_positive, 
+                                   knots = knots_positive, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+M_basis_cubic_positive <- mSpline(time_seq_positive, 
+                                   knots = knots_positive, 
+                                   degree = degree, 
+                                   intercept = TRUE)
+
+I_basis_function_values_positive <- iSpline(time_positive, 
+                                             knots = knots_positive, 
+                                             degree = degree, 
+                                             intercept = TRUE)
+M_basis_function_values_positive <- mSpline(time_positive, 
+                                             knots = knots_positive, 
+                                             degree = degree, 
+                                             intercept = TRUE)
+write("// Stan model for splines
+  //
+  data {
+    //
+    int < lower = 1 > n; // sample size
+    int < lower = 1 > n_col;// number of columns
+    //
+    vector[n] delta; // indicator of event
+    //
+    matrix[n,n_col] I_basis_function_values; // cumulative hazard function
+    matrix[n,n_col] M_basis_function_values; // hazard function
+    //
+    int <lower = 1> n_seq;
+    matrix[n_seq, n_col] I_basis_function_t_seq;
+    matrix[n_seq, n_col] M_basis_function_t_seq;
+
+    //
+  }
+  //
+  parameters {
+    //
+    vector <lower = 0.0001>  [n_col] beta;
+    //
+  }
+//
+    model {
+      //
+      vector[n] h;
+      vector[n] log_h;
+      vector[n] H; 
+      //
+      // Calculate h, log_h and H
+      //
+      h = M_basis_function_values * beta;
+      log_h = log(h);
+      //
+      H = I_basis_function_values * beta;
+      //
+      // Prior
+      //
+      beta ~ normal(0,100); // prior on beta
+      //
+      // Define log_h and H (could be vectoried?)
+      //
+      // Log-likelihood (here defined in vectorized form)
+      //
+      target += delta .* log_h - H;
+      //
+    }
+    //
+    generated quantities {
+      vector[n_seq] h_seq;
+      vector[n_seq] H_seq;
+      vector[n_seq] S_seq;
+      //
+      h_seq = M_basis_function_t_seq * beta;
+      H_seq = I_basis_function_t_seq * beta;
+      //
+      S_seq = exp(-H_seq);
+    }",
+      
+# Specify file where code is written
+file = "positive_staining.stan")
+
+##############################################################
+#
+# Check correctness of code
+#
+stanc("positive_staining.stan")
+
+data_spline_positive <- list(n = length(time_positive),
+                              delta = status_positive,
+                              I_basis_function_values = I_basis_function_values_positive,
+                              M_basis_function_values = M_basis_function_values_positive,
+                              n_col = ncol(I_basis_function_values_positive),
+                              #
+                              n_seq = nrow(I_basis_cubic_positive),
+                              I_basis_function_t_seq = I_basis_cubic_positive,
+                              M_basis_function_t_seq = M_basis_cubic_positive)
+
+fit_positive <- stan(file = "positive_staining.stan",
+                      data = data_spline_positive,
+                      warmup = 2500, # Burn-in
+                      iter = 5000, # Total number of iterations
+                      chains = 2, # Number of chains
+                      cores = 2, # Number of computer cores to use
+                      thin = 1) # Thinning interval
+fit_positive
+
+stan_plot(fit_positive,pars = "h_seq")
+stan_plot(fit_positive,pars = "H_seq")
+stan_plot(fit_positive,pars = "S_seq")
+
+# Extract the information about h_seq, H_seq and S_seq
+#
+h_seq_posterior_positive <- summary(fit_positive)$summary[paste0("h_seq[",1:N,"]"), 
+                                                            c("mean", "2.5%", "97.5%")]
+h_seq_posterior_positive
+#
+
+H_seq_posterior_positive <- summary(fit_positive)$summary[paste0("H_seq[",1:N,"]"), 
+                                                            c("mean", "2.5%", "97.5%")]
+H_seq_posterior_positive
+
+S_seq_posterior_positive <- summary(fit_positive)$summary[paste0("S_seq[",1:N,"]"), 
+                                                            c("mean", "2.5%", "97.5%")]
+S_seq_posterior_positive
+
+
+par(mfrow = c(1,1))
+
+matplot(time_seq_positive, h_seq_posterior_positive,
+        type = "l",lwd = 3,xlab = "t",ylab = "h(t)")
+#
+matplot(time_seq_positive, H_seq_posterior_positive,
+        type = "l",lwd = 3,xlab = "t",ylab = "H(t)")
+#
+matplot(time_seq_positive, S_seq_posterior_positive,
+        type = "l",
+        lty = 1,
+        col = "red")
+
+
+
+stan_trace(fit_positive)
+
+par(mfrow = c(1, 2))
+
+matplot(time_seq_real_data, S_seq_posterior_real_data,
+        type = "l",
+        lty = 1,
+        col = "red")
+
+matplot(time_seq_positive, S_seq_posterior_positive,
+        type = "l",
+        lty = 1,
+        col = "red")
+
+par(mfrow = c(1,1))
+
+matplot(time_seq_real_data, S_seq_posterior_real_data,
+        xlab = "Time t (months)",
+        ylab = "S(t)",
+        type = "l",
+        lty = 1,
+        col = "blue",
+        xlim = range(time_seq_real_data, time_seq_positive))
+
+matlines(time_seq_positive, S_seq_posterior_positive,
+        type = "l",
+        lty = 1,
+        col = "red")
+
+legend("topright",
+       legend = c("Negative",
+                  "Positive"),
+       lty = 1,
+       col = c("blue", "red"),
+       title = "Stain")
+
+
+plot(survfit(Surv(stime, status) ~ factor(treat), VA), conf.int = TRUE)
+library(survival)
