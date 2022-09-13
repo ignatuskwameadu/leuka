@@ -1,0 +1,78 @@
+myeloma_data<-read_table("Survival of multiple myeloma patients.dat")
+head(myeloma_data)
+
+f<-coxph(Surv(time,status)~ age+as.factor(sex)+bun+ca+hb+pcells+as.factor(protein)^2,data = myeloma_data)
+f
+## in performing the backward elimination it was just bun and hp left in the model. so i am going to fit 
+# the model with just the two covariates
+myeloma_data_2<-myeloma_data%>%mutate(bun_f=bun,hb_f=hb)
+
+
+f_new_3 <- coxph(Surv(time,status)~ bun_f+hb_f,data = myeloma_data_2)
+f_new_3
+
+summary(f_new_3)
+
+cox_fit<-survfit(f_new_3)
+plot(cox_fit,col = c("red","orange","blue"))
+
+
+
+
+library(ggplot2)
+library(survminer)
+
+f_new_3
+
+summary(f_new_3)
+
+ggforest(f_new_3)# the forest plot for the CoxPH  model
+
+f_new_bun <- survfit(Surv(time,status)~ bun,data = myeloma_data)
+plot(f_new_bun)
+
+f_new_hb<-f_new <- survfit(Surv(time,status)~ hb,data = myeloma_data)
+plot(f_new_hb)
+#
+with(myeloma_data,
+     hist(bun))
+#
+myeloma_data_2 <- myeloma_data %>%
+                      mutate(bun_f = cut_number(bun, 2),
+                             hb_f = cut_number(hb, 2))
+#
+myeloma_data_2 %>% 
+  group_by(bun_f) %>%
+  count()
+#
+myeloma_data_2 %>% 
+  group_by(hb_f) %>%
+  count()
+
+myeloma_data_2 %>% 
+  group_by(bun_f, hb_f) %>%
+  count()
+#
+f_new <- survfit(Surv(time,status)~ bun_f,
+                 data = myeloma_data_2)
+plot(f_new,
+     col = 1:9)
+
+f_new <- survfit(Surv(time,status)~ hb_f,
+                 data = myeloma_data_2)
+plot(f_new,
+     col = 1:9)
+#
+f_new <- survfit(Surv(time,status)~ bun_f + hb_f,
+                 data = myeloma_data_2)
+plot(f_new,
+     col = 1:9)
+#
+ggsurvplot(f_new)
+
+ggsurvplot(f_new, 
+           facet.by = "hb_f")
+           
+           tables.theme = 
+             theme(legend.position = "right")+
+               theme(legend.position = "bottom")
