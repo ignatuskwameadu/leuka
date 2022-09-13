@@ -1,0 +1,241 @@
+###################################################
+#
+# Simulate data from an exponential distribution
+#
+# Assume that the hazard is constant over time
+#
+n <- 5000
+#
+# Hazard
+#
+lambda <- 1.5
+#
+lambda
+#
+# Simulate some data
+#
+t_expo <- rexp(n, rate = lambda)
+head(t_expo,n = 100)
+#
+# Censoring
+#
+# Generate random censoring limits c from an exponential
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+mean_factor <- 0.2
+#
+censoring_limit_expo <- rexp(n,  
+                        rate = mean_factor * lambda) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored_expo <- ifelse(censoring_limit_expo < t_expo, 1, 0)
+#
+is_censored_expo
+#
+# Censoring rate
+#
+censoring_rate_expo <- mean(is_censored_expo)
+#
+print(paste("Censoring rate is ", censoring_rate_expo))
+#
+# Events are the opposite of this
+#
+event_expo <- ifelse(t_expo < censoring_limit_expo, 1, 0)
+#
+event_expo
+#
+t_after_censoring_expo <- ifelse(censoring_limit_expo < t_expo, 
+                            censoring_limit_expo, t_expo)
+#
+t_after_censoring_expo
+#
+# Check that this is min(censoring limit, t)
+#
+t_after_censoring_expo - pmin(censoring_limit_expo, t_expo)
+#
+t_after_censoring_expo
+#
+# Some plots
+#
+hist(t_after_censoring_expo[event_expo == 1])
+#
+hist(t_after_censoring_expo[event_expo == 0])
+#
+# Data to use are
+#
+head(cbind(t_after_censoring_expo, event_expo),50)
+#
+##################################################################
+#
+# Repeat for the Weibull
+#
+# Weibull parameters
+#
+# Book by Dave Collett
+#
+lambda <- 1.5
+#
+gamma <- 1.2
+#
+# Parameterization used by rweibull
+#
+shape <- gamma # a
+#
+scale <- lambda^(-1 / gamma) # b 
+#
+# Simulate data from a Weibull distribution
+#
+t <- rweibull(n,
+              shape = shape,
+              scale = scale)
+#
+# Censoring
+#
+# Generate random censoring limits c from a weibull
+# with a higher mean, achieved by multiplying lambda by mean_factor
+#
+mean_factor <- 1.5
+#
+censoring_limit <-  rweibull(n,
+                             shape = shape,
+                             scale = scale * mean_factor) # Higher mean
+#
+# Identify which points are censored
+#
+is_censored <- ifelse(censoring_limit < t, 1, 0)
+#
+# Censoring rate
+#
+censoring_rate <- mean(is_censored)
+#
+print(paste("Censoring rate is ", censoring_rate))
+
+
+
+
+#
+# Events are the opposite of this
+#
+
+event <- ifelse(t < censoring_limit, 1, 0)
+#
+t_after_censoring <- ifelse(censoring_limit < t, 
+                            censoring_limit, t)
+
+hist(t_after_censoring[event == 1])
+#
+hist(t_after_censoring[event == 0])
+#
+# Data to use are
+#
+cbind(t_after_censoring, event)
+
+## log-likelihood for exponential
+exploglik <- function(time,delta,lambda){
+    sum(event_expo*log(lambda))-lambda*sum(t_after_censoring_expo)
+}
+exploglik(time = t_expo,delta = event_expo,2)
+
+
+lambda_vec <- seq(0.5,2.4,length=100)
+exploglik2 <- function(time,delta,lambda){
+ 
+  expo_values<-rep(NA,length(lambda_vec))
+  for (i in 1:length(lambda_vec)) {
+    t<-sum(event_expo*log(lambda[i]))-lambda[i]*sum(t_after_censoring_expo)
+    expo_values[i]<- t
+  }
+  return(expo_values)
+}
+w<-exploglik2(t_expo,event_expo,lambda_vec)
+w
+
+library(latex2exp)
+par(mar=c(5.1,4.1+1,4.1,2.1))
+plot(lambda_vec,w,type = "l",xlab = TeX("$\\lambda"),
+     ylab = TeX("$L(\\lambda)"),
+     cex.lab = 1.25,
+     cex.axis=1.25)
+abline(v=lambda)
+#
+# -------------------------------
+#
+library(survival)
+m <- survreg(Surv(t_after_censoring_expo,event_expo) ~ 1,
+             dist = "exponential")
+summary(m)
+lambda_hat <- exp(-coef(m))
+abline(v = lambda_hat)
+
+
+lambda_vec <- seq(0.5, 2, length =200)
+shape_vec <- seq(0.5,2,length=200)
+
+
+weiloglik<-function(lambda,shape,time,event){
+  wei_mat <- matrix(NA,
+                    nrow = length(lambda),
+                    ncol = length(shape))
+  
+  for (i in 1:length(lambda)) {
+    for(j in 1:length(shape)){
+    ll <-sum(event*(log(lambda[i])+ log(shape[j]) + (shape[j] - 1)*log(time)) - lambda[i]*time^shape[j])
+    wei_mat[i,j]<-ll
+    }
+  }
+  return(wei_mat)
+}
+u<-weiloglik(lambda_vec,shape_vec,t_after_censoring,event)
+u
+contour(lambda_vec,
+        shape_vec,
+        u,
+        nlevels = 100)
+
+points(lambda,
+       shape,
+       pch = 4,
+       col = "green",
+       cex = 2)
+
+m <- survreg(Surv(t_after_censoring,event) ~ 1,
+             dist = "weibull")
+summary(m)
+coef(m)
+alpha_hat <- coef(m)
+alpha_hat
+shape_hat <- 1 / m$scale
+shape_hat
+#
+beta_hat <- -alpha_hat * shape_hat
+beta_hat
+#
+lambda_hat <- exp(beta_hat)
+lambda_hat
+#
+points(lambda_hat,
+       shape_hat,
+       pch = 4,
+       col = "red",
+       cex = 2)
+
+
+
+weiloglik2<-function(lambda,shape,time,event){
+  wei_values<- rep(NA,length(shape_seq))
+  for (k in 1:length(shape_seq)) {
+    s<-sum(event*log(lambda)+ log(shape[k]) + (shape[k]-1)*log(time) - lambda*time^shape[k])
+    wei_values[k]<-s
+  }
+  return(wei_values)
+}
+h<-weiloglik2(1.5,shape_seq,t_after_censoring,event)
+h
+
+y<-cbind(lambda_vec,u,shape_seq,h)
+y
+colnames(y)<- c("seq_of_lambda","log_likelihood_lambda","seq_of_shapes","log_likelihood_of_shapes")
+y
+
+contour(y)
